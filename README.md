@@ -44,127 +44,174 @@ rcon：轮常量，用于密钥扩展。
 
 ## 三、实现功能
 
-1. **多模式加解密**：支持ASCII模式和二进制模式下8-bit数据和10-bit密钥的加密和解密。
+1. **提供GUI解密支持用户交互**：输入可以是16bit的数据和16bit的密钥，输出是16bit的密文。
 2. **跨平台一致性**：实现跨平台一致性，保证程序在不同平台上运行结果一致。
-3. **扩展功能**：支持ASCII编码字符串的加密和解密。
-4. **暴力破解**：支持暴力破解，通过尝试所有可能的密钥来解密已加密的消息。
-5. **封闭测试**：判断是否存在多个密钥可以生成相同的密文。
+3. **扩展功能**：加密算法的数据输入可以是ASII编码字符串(分组为2 Bytes)，对应地输出也可以是ACII字符串。
+4. **多重加密**：双重加密、中间相遇攻击以及三重加密均能实现。
+5. **CBC模式**：较长的明文消息进行加密、初始向量的生成，解密双方共享。
 
 
 ## 四、代码实现
-##### 生成密钥函数
-generate_all_keys: 生成所有可能的10位二进制密钥，共1024种可能性。
-try_key: 尝试用给定密钥解密，如果解密结果与明文匹配则返回该密钥。
-brute_force: 使用多线程进行暴力破解，遍历所有密钥以找到匹配的结果。
+##### S_AES 类及其构造函数
+密钥校验：检查输入密钥的长度为 16 位，并且仅包含 '0' 和 '1'。
+S-BOX 和 RCON 初始化：定义 S-BOX 和反 S-BOX，用于字节替代。定义轮常量 rcon，用于密钥扩展。
+调用密钥扩展方法：进行密钥扩展，生成多个轮密钥。
 ```python
-def generate_all_keys():
-    return [[int(bit) for bit in format(i, '010b')] for i in range(1024)]
-
-# 尝试用给定的密钥解密密文，如果解密结果与明文匹配，则返回该密钥
-def try_key(key, plaintext, ciphertext):
-    if decrypt(ciphertext, key) == plaintext:
-        return key
-
-# 使用所有可能的密钥尝试解密，返回所有成功的密钥及其对应的时间
-def brute_force(plaintext, ciphertext):
-    keys = generate_all_keys()
-    successful_keys = []
-
-    # 使用多线程来加速破解
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        future_to_key = {executor.submit(try_key, key, plaintext, ciphertext): key for key in keys}
-        for future in concurrent.futures.as_completed(future_to_key):
-            key = future_to_key[future]
-            if future.result() is not None:
-                successful_keys.append((key, time.time()))
-
-    return successful_keys
+class S_AES:
+    def __init__(self, key):
+        if len(key) != 16 or not all(c in '01' for c in key):
+            raise ValueError("密钥必须是16位二进制数")
+        self.key = key
+        self.round_keys = []
+        self.s_box = [
+            ["1001", "0100", "1010", "1011"],
+            ["1101", "0001", "1000", "0101"],
+            ["0110", "0010", "0000", "0011"],
+            ["1100", "1110", "1111", "0111"]
+        ]
+        self.inv_s_box = [
+            ["1010", "0101", "1001", "1011"],
+            ["0001", "0111", "1000", "1111"],
+            ["0110", "0000", "0010", "0011"],
+            ["1100", "0100", "1101", "1110"]
+        ]
+        self.rcon = ['10000000', '00110000']
+        self.key_expansion()
 ```
-##### 加密与解密算法
-encrypt: 实现S-DES的加密过程，分为多个步骤，包括密钥扩展、初始置换、轮函数操作和逆初始置换。
-decrypt: 实现S-DES的解密过程，与加密过程相反，使用不同的子密钥顺序。
+##### 异或操作方法
+对输入的两个二进制字符串执行逐位异或操作，返回异或结果。
+如果两个位相同，返回 '0'; 如果不同，返回 '1'。
 ```python
-# S-DES 加密函数
-def encrypt(plaintext, key):
-    k1, k2 = key_expansion(key)
+def xor_strings(self, string, key):
+    """对两个二进制字符串进行异或操作。"""
+    return ''.join(['0' if s == k else '1' for s, k in zip(string, key)])
 
-    # 初始置换 IP
-    IP_plaintext = permute(plaintext, IP)
+```
+##### 密钥扩展方法
+将原始密钥分为两个 8 位的轮密钥。
+通过异或操作和辅助函数 g 生成更多轮密钥。
+```python
+def key_expansion(self):
+    """扩展密钥为多个轮密钥"""
+    self.round_keys = [self.key[i:i + 8] for i in range(0, 16, 8)]
+    self.round_keys.append(self.xor_strings(self.round_keys[0], self.g(self.round_keys[1], 1)))
+    self.round_keys.append(self.xor_strings(self.round_keys[1], self.round_keys[2]))
+    self.round_keys.append(self.xor_strings(self.round_keys[2], self.g(self.round_keys[3], 2)))
+    self.round_keys.append(self.xor_strings(self.round_keys[3], self.round_keys[4]))
+```
+##### 生成轮密钥的方法
+用于生成轮密钥中的一个部分。
+对输入的子密钥 w 执行字节替代，使用 S-BOX 进行转换。
+通过异或操作与轮常量 rcon 结合生成新的轮密钥。
+```python
+def g(self, w, n):
+    """生成轮密钥"""
+    substituted = self.substitute_bytes(w[4:8], 1) + self.substitute_bytes(w[0:4], 1)
+    return self.xor_strings(substituted, self.rcon[n - 1])
+```
+##### 字节替代方法
+根据指定模式执行字节替代操作。
+对输入的半字节（4 位）进行行列查找，从 S-BOX 或反 S-BOX 中获得替代值。
+```python
+def substitute_bytes(self, nibble, mode):
+    """替换字节"""
+    row = int(nibble[:2], 2)
+    col = int(nibble[2:], 2)
+    if mode == 1:
+        return self.s_box[row][col]
+    else:
+        return self.inv_s_box[row][col]
 
-    L0, R0 = IP_plaintext[:4], IP_plaintext[4:]
-
-    # 第一轮 F 函数
-    L1 = R0
-    r0 = f(R0, k1)  
-    R1 = xor(L0, r0) 
-
-    # 交换左右
-    L2 = R1
-    r1 = f(L1, k2)  
-    R2 = xor(L2, r1)  
-
-    combined = R2 + L1  
-
-    # 逆初始置换 IP_inv
-    ciphertext = permute(combined, IP_inv)
-
+```
+##### 加密和解密方法
+接收 16 位的明文，并进行加密处理。
+执行轮密钥加、字节替代、行移位和列混淆等步骤，经过两轮处理后得到密文。
+```python
+def encrypt(self, plaintext):
+    """加密函数"""
+    if len(plaintext) != 16 or not all(c in '01' for c in plaintext):
+        raise ValueError("明文必须是16位二进制数")
+    
+    state = self.xor_strings(plaintext, self.round_keys[0] + self.round_keys[1])  # 轮密钥加
+    # 第一轮
+    state = self.byte_substitution(state, 1)
+    state = self.row_shift(state)
+    state = self.column_mixing(state, 1)
+    state = self.xor_strings(state, self.round_keys[2] + self.round_keys[3])  # 轮密钥加
+    # 第二轮
+    state = self.byte_substitution(state, 1)
+    state = self.row_shift(state)
+    ciphertext = self.xor_strings(state, self.round_keys[4] + self.round_keys[5])  # 轮密钥加
     return ciphertext
 
-def decrypt(ciphertext, key):
-    k1, k2 = key_expansion(key)
-
-    # 初始置换 IP
-    IP_ciphertext = permute(ciphertext, IP)
-
-    L0, R0 = IP_ciphertext[:4], IP_ciphertext[4:]
-
-    # 第一轮 F 函数
-    L1 = R0
-    r0 = f(R0, k2)  
-    R1 = xor(L0, r0) 
-
-    # 交换左右
-    L2 = R1
-    r1 = f(L1, k1)  
-    R2 = xor(L2, r1)
-
-    combined = R2 + L1 
-
-    # 逆初始置换 IP_inv
-    plaintext = permute(combined, IP_inv)
-
-    return plaintext
 ```
-##### 轮函数 f_k
-这个函数实现了S-DES的轮函数操作。
+
+解密过程类似于加密，使用反操作和轮密钥还原明文。
 ```python
-def f(R, k):
-    # EP 置换
-    permuted_R = permute(R, EP)
+def decrypt(self, ciphertext):
+    """解密函数"""
+    if len(ciphertext) != 16 or not all(c in '01' for c in ciphertext):
+        raise ValueError("密文必须是16位二进制数")
+    
+    state = self.xor_strings(ciphertext, self.round_keys[4] + self.round_keys[5])  # 轮密钥加
+    state = self.row_shift(state)
+    state = self.byte_substitution(state, 2)
+    state = self.xor_strings(state, self.round_keys[2] + self.round_keys[3])  # 轮密钥加
+    state = self.column_mixing(state, 2)
+    state = self.row_shift(state)
+    state = self.byte_substitution(state, 2)
+    plaintext = self.xor_strings(state, self.round_keys[0] + self.round_keys[1])  # 轮密钥加
+    return plaintext
 
-    # 与子密钥 k 进行异或
-    xor_result = xor(permuted_R, k)
-
-    # S-Box 输入
-    left_sbox_input = xor_result[:4]
-    right_sbox_input = xor_result[4:]
-
-    # S-Box 替换
-    row1 = (left_sbox_input[0] << 1) | left_sbox_input[3]  
-    col1 = (left_sbox_input[1] << 1) | left_sbox_input[2]  
-    sbox1_output = SBox1[row1][col1]
-
-    row2 = (right_sbox_input[0] << 1) | right_sbox_input[3]  
-    col2 = (right_sbox_input[1] << 1) | right_sbox_input[2]  
-    sbox2_output = SBox2[row2][col2]
-
-    # S-Box 输出转换为二进制
-    sbox_output = [int(x) for x in f'{sbox1_output:02b}'] + [int(x) for x in f'{sbox2_output:02b}']
-
-    # P4 置换
-    return permute(sbox_output, P4)
 
 ```
+##### 双重和三重加密解密方法
+这些函数（如 double_use_encrypt，triple_use_encrypt）使用多个 S_AES 实例进行加密和解密，以提高安全性，依次对明文进行加密或解密。
+
+##### 中间相遇攻击相关的方法
+实现中间相遇攻击的方法，通过枚举可能的密钥 k1 和 k2 来寻找匹配的中间值，从而推导出密钥。
+```python
+def attack(plaintexts: str, ciphertexts: str) -> list:
+    plaintexts = plaintexts.split()
+    ciphertexts = ciphertexts.split()
+
+    possible_keys = {}
+
+    # 遍历第一个明密文对，生成初步候选密钥
+    plain = int(plaintexts[0], 2)
+    cipher = int(ciphertexts[0], 2)
+
+    for k1 in range(0x10000):
+        k1_bin = '{:016b}'.format(k1)
+        mid_value = single_use_encrypt('{:016b}'.format(plain), k1_bin)
+        possible_keys[mid_value] = k1_bin  # 存储为16位字符串
+
+    found_keys = []
+
+    for k2 in range(0x10000):
+        k2_bin = '{:016b}'.format(k2)
+        mid_value = single_use_decrypt('{:016b}'.format(cipher), k2_bin)
+        if mid_value in possible_keys:
+            found_keys.append((possible_keys[mid_value], k2_bin))  # 存储为16位字符串
+            if len(found_keys) >= 100:
+                break
+
+    for i in range(1, len(plaintexts)):
+        plain = int(plaintexts[i], 2)
+        cipher = int(ciphertexts[i], 2)
+        found_keys = [
+            (k1, k2) for k1, k2 in found_keys
+            if single_use_encrypt('{:016b}'.format(plain), '{:048b}'.format(k1)) == single_use_decrypt('{:016b}'.format(cipher), '{:048b}'.format(k2))
+        ]
+        if len(found_keys) >= 100:
+            found_keys = found_keys[:100]
+            break
+
+    return found_keys
+
+```
+
+整个 S_AES 类提供了 AES 加密算法的简化实现，包括密钥生成、字节替代、行移位、列混淆等核心功能。
 
 ## 五、项目测试
 #### 第1关：根据S-DES算法编写和调试程序，提供GUI解密支持用户交互。输入可以是8bit的数据和10bit的密钥，输出是8bit的密文
