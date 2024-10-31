@@ -215,7 +215,8 @@ def attack(plaintexts: str, ciphertexts: str) -> list:
 
 ## 五、项目测试
 #### 第1关：根据S-AES算法编写和调试程序，提供GUI解密支持用户交互。输入可以是16bit的数据和16bit的密钥，输出是16bit的密文。
-https://github.com/moon1visitor/naninani_S-AES/blob/4c9400a44eff3a186912b191ee9d1ad84867975e/jpgs/1.1.png
+
+![Uploading 1.1.png…]()
 
 
 
